@@ -22,7 +22,10 @@ Reference:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+import logging
+from typing import Any, Optional
+LOG = logging.getLogger(__name__)
+
 
 
 
@@ -143,13 +146,13 @@ class MappedAdvisory:
     url: Optional[str] = None
     date_published: Optional[str] = None
 
-    aliases: list = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
 
-    affected_packages: list = field(default_factory=list)
+    affected_packages: list[MappedAffectedPackage] = field(default_factory=list)
 
-    severities: list = field(default_factory=list)
+    severities: list[MappedSeverity] = field(default_factory=list)
 
-    references: list = field(default_factory=list)
+    references: list[dict[str, str]] = field(default_factory=list)
 
     primary_cve: Optional[str] = None
 
@@ -158,7 +161,7 @@ class MappedAdvisory:
 
 # Core mapper function — this is what replaces the old parse logic
 
-def map_v2_advisory_to_scancode(advisory_json: dict) -> MappedAdvisory:
+def map_v2_advisory_to_scancode(advisory_json: dict[str, Any]) -> MappedAdvisory:
     """
     Take a single advisory object from the V2 API response and convert it
     into a MappedAdvisory that scancode.io's pipeline can use.
@@ -173,12 +176,19 @@ def map_v2_advisory_to_scancode(advisory_json: dict) -> MappedAdvisory:
         MappedAdvisory instance ready to be stored / used for package annotation.
     """
     advisory_id = advisory_json.get("advisory_id", "")
+    if not advisory_id:
+        LOG.warning("Advisory missing advisory_id: %s", advisory_json)
+
     aliases = advisory_json.get("aliases", [])
+    if not isinstance(aliases, list):
+        LOG.warning("Unexpected aliases type (%s), coercing to empty list", type(aliases).__name__)
+        aliases = []
+
     summary = advisory_json.get("summary", "")
     url = advisory_json.get("url")
     date_published = advisory_json.get("date_published")
 
-    affected_packages = []
+    affected_packages: list[MappedAffectedPackage] = []
     for pkg in advisory_json.get("affected_packages", []):
         affected_packages.append(
             MappedAffectedPackage(
@@ -188,8 +198,8 @@ def map_v2_advisory_to_scancode(advisory_json: dict) -> MappedAdvisory:
             )
         )
 
-    severities = []
-    max_score = None
+    severities: list[MappedSeverity] = []
+    max_score: Optional[float] = None
     for sev in advisory_json.get("severities", []):
         mapped_sev = MappedSeverity(
             system=sev.get("system", ""),
@@ -202,8 +212,8 @@ def map_v2_advisory_to_scancode(advisory_json: dict) -> MappedAdvisory:
             score = float(sev.get("value", 0))
             if max_score is None or score > max_score:
                 max_score = score
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            LOG.debug("Skipping non-numeric severity value=%r (%s)", sev.get("value"), e)
 
 
     primary_cve = None
@@ -217,7 +227,7 @@ def map_v2_advisory_to_scancode(advisory_json: dict) -> MappedAdvisory:
                 primary_cve = alias
                 break
 
-    references = []
+    references: list[dict[str, str]] = []
     for ref in advisory_json.get("references", []):
         references.append({
             "url": ref.get("url", ""),
@@ -240,9 +250,9 @@ def map_v2_advisory_to_scancode(advisory_json: dict) -> MappedAdvisory:
 
 
 def map_v2_response_to_package_annotations(
-    api_response: dict,
-    project_purls: list,
-) -> dict:
+    api_response: dict[str, Any],
+    project_purls: list[str],
+) -> dict[str, list[MappedAdvisory]]:
     """
     The top-level function that mirrors what the refactored find_vulnerabilities
     pipeline step will do in scancode.io.
@@ -262,7 +272,7 @@ def map_v2_response_to_package_annotations(
     Returns:
         Dict of { purl: [MappedAdvisory, ...] }
     """
-    purl_to_advisories = {purl: [] for purl in project_purls}
+    purl_to_advisories: dict[str, list[MappedAdvisory]] = {purl: [] for purl in project_purls}
 
     for advisory_json in api_response.get("results", []):
         mapped = map_v2_advisory_to_scancode(advisory_json)
@@ -274,7 +284,7 @@ def map_v2_response_to_package_annotations(
     return purl_to_advisories
 
 
-def advisory_to_db_dict(advisory: MappedAdvisory, purl: str) -> dict:
+def advisory_to_db_dict(advisory: MappedAdvisory, purl: str) -> dict[str, Any]:
     """
     Convert a MappedAdvisory into the dict format that scancode.io
     stores in DiscoveredPackage.affected_by_vulnerabilities (a JSON field).

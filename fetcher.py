@@ -27,6 +27,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
+import time
 
 import requests
 
@@ -60,6 +61,8 @@ class VulnerableCodeClient:
     base_url: str = BASE_URL
     api_token: Optional[str] = None
     timeout_seconds: int = 15
+    retry_count: int = 1
+    retry_backoff_seconds: float = 1.0
 
     @property
     def advisory_v2_endpoint(self) -> str:
@@ -76,34 +79,58 @@ class VulnerableCodeClient:
         return headers
 
     def get_json(self, url: str, *, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        try:
-            response = requests.get(url, params=params, headers=self.headers(), timeout=self.timeout_seconds)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            LOG.error("HTTP error requesting %s: %s", url, e)
-        except requests.exceptions.ConnectionError:
-            LOG.error("Connection error requesting %s", url)
-        except requests.exceptions.Timeout:
-            LOG.error("Timeout requesting %s", url)
-        except ValueError as e:
-            LOG.error("Invalid JSON from %s: %s", url, e)
+        attempts = self.retry_count + 1
+        for attempt in range(attempts):
+            try:
+                response = requests.get(url, params=params, headers=self.headers(), timeout=self.timeout_seconds)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if status_code == 429 and attempt < self.retry_count:
+                    delay = self.retry_backoff_seconds * (attempt + 1)
+                    LOG.warning("Rate limited on %s, retrying in %.1fs", url, delay)
+                    time.sleep(delay)
+                    continue
+                LOG.error("HTTP error requesting %s: %s", url, e)
+                break
+            except requests.exceptions.ConnectionError:
+                LOG.error("Connection error requesting %s", url)
+                break
+            except requests.exceptions.Timeout:
+                LOG.error("Timeout requesting %s", url)
+                break
+            except ValueError as e:
+                LOG.error("Invalid JSON from %s: %s", url, e)
+                break
         return {}
 
     def post_json(self, url: str, *, json_body: dict[str, Any], timeout_seconds: Optional[int] = None) -> dict[str, Any]:
         timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
-        try:
-            response = requests.post(url, json=json_body, headers=self.headers(), timeout=timeout)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            LOG.error("HTTP error requesting %s: %s", url, e)
-        except requests.exceptions.ConnectionError:
-            LOG.error("Connection error requesting %s", url)
-        except requests.exceptions.Timeout:
-            LOG.error("Timeout requesting %s", url)
-        except ValueError as e:
-            LOG.error("Invalid JSON from %s: %s", url, e)
+        attempts = self.retry_count + 1
+        for attempt in range(attempts):
+            try:
+                response = requests.post(url, json=json_body, headers=self.headers(), timeout=timeout)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if status_code == 429 and attempt < self.retry_count:
+                    delay = self.retry_backoff_seconds * (attempt + 1)
+                    LOG.warning("Rate limited on %s, retrying in %.1fs", url, delay)
+                    time.sleep(delay)
+                    continue
+                LOG.error("HTTP error requesting %s: %s", url, e)
+                break
+            except requests.exceptions.ConnectionError:
+                LOG.error("Connection error requesting %s", url)
+                break
+            except requests.exceptions.Timeout:
+                LOG.error("Timeout requesting %s", url)
+                break
+            except ValueError as e:
+                LOG.error("Invalid JSON from %s: %s", url, e)
+                break
         return {}
 
 
@@ -180,6 +207,7 @@ def run_demo(
     purls: Iterable[str] = TEST_PURLS,
     save_samples: bool = True,
     output_path: str = "testcase/live_api_comparison.json",
+    include_bulk: bool = True,
 ) -> dict[str, Any]:
     """
     Run the full fetch demo and optionally save raw API responses as JSON
@@ -204,6 +232,10 @@ def run_demo(
         # --- Old V1 package endpoint ---
         v1_data = fetch_vulnerabilities_old_v1(client, purl)
         results[f"v1_{purl_key}"] = v1_data
+
+    if include_bulk:
+        bulk_data = fetch_advisories_bulk(client, list(purls))
+        results["v2_bulk"] = bulk_data
 
     if save_samples:
         with open(output_path, "w") as f:
@@ -236,6 +268,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Fetch for this PURL (repeatable). Uses TEST_PURLS if omitted.",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
+    parser.add_argument(
+        "--no-bulk",
+        dest="include_bulk",
+        action="store_false",
+        help="Skip V2 bulk advisory demo call.",
+    )
     return parser
 
 
@@ -248,6 +286,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         purls=args.purls or TEST_PURLS,
         save_samples=args.save_samples,
         output_path=args.output_path,
+        include_bulk=args.include_bulk,
     )
     return 0
 
