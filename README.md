@@ -86,11 +86,12 @@ Response: {
 Queries the live `public.vulnerablecode.io` API. Shows both the old V1 endpoint and the new V2 advisory endpoint side-by-side so you can see the structural difference in real responses.
 
 ```bash
-python fetcher.py               # anonymous (rate limited)
-python fetcher.py <your_token>  # with API token
+python fetcher.py                  # anonymous (rate limited)
+python fetcher.py --token <token>  # with API token
+python fetcher.py --no-bulk        # skip bulk advisory demo call
 ```
 
-Saves raw API responses to `sample_api_responses.json` for offline development.
+Saves raw API responses to `testcase/live_api_comparison.json` for offline development.
 
 ### `mapper.py`
 The most important file. Takes a raw V2 advisory JSON response and maps it into the data structure that `scancode.io` uses when saving vulnerability data to its database.
@@ -196,13 +197,16 @@ git clone https://github.com/<your-username>/aboutcode-api-migration-poc
 cd aboutcode-api-migration-poc
 
 # Install dependencies
-pip install requests
+pip install -r requirements.txt
 
 # Run the API fetcher (hits the live public API)
 python fetcher.py
 
 # Run the mapper demo (fully offline, no API needed)
 python mapper.py
+
+# Run unit tests for mapper behavior and edge cases
+python -m unittest discover -s tests -v
 ```
 
 ---
